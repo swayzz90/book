@@ -1,5 +1,5 @@
-const CACHE_NAME = 'blattwerk-shell-v2';
-const SHELL = ['./','./index.html','./styles.css','./app.js','./db.js','./pdf-engine.js','./favicon.svg','./icon-192.png','./icon-512.png','./manifest.webmanifest'];
+const CACHE_NAME = 'blattwerk-shell-v3';
+const SHELL = ['./','./index.html','./styles.css','./app.js','./db.js','./pdf-engine.js','./epub-engine.js','./vendor/jszip.min.js','./favicon.svg','./icon-192.png','./icon-512.png','./manifest.webmanifest'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });

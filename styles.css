@@ -15,3 +15,10 @@
 @media(max-width:420px){.section-kicker{font-size:9px}.library-heading h1{font-size:43px}.shelf-grid{gap:25px 12px}.book-card-title{font-size:13px}.book-card-sub{font-size:11px}.reader-name{font-size:11px}.mode-picker button{padding:0 10px}.reading-progress{width:24%}.progress-number{display:none}.paper-content{padding-left:6%;padding-right:6%}.book-stage .stage-arrow{width:20px}}
 @media(hover:none){.cover-open{opacity:0}.book-card .card-delete{opacity:1}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:.01ms!important;scroll-behavior:auto!important}}
+/* EPUB: same black/white reading surface as PDFs, with book illustrations. */
+.epub-mode{font-size:12px;font-weight:650;color:#c3c3c6;letter-spacing:.025em;white-space:nowrap}
+.chapter-prefix{font-size:11px;color:#a4a4a9}
+.epub-figure{margin:28px auto;display:flex;justify-content:center;max-width:100%}
+.epub-figure img{max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain;border-radius:2px}
+.book-text .epub-figure:first-child{margin-top:0}
+@media(max-width:740px){.epub-mode{font-size:11px}.epub-figure{margin:20px auto}}

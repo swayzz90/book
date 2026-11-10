@@ -1,5 +1,6 @@
 import { getBooks, putBook, deleteBook } from './db.js';
 import { loadDocument, makeCover, extractPage, renderPDFPage } from './pdf-engine.js';
+import { loadEpub, extractEpubChapter } from './epub-engine.js';
 
 const $ = (selector) => document.querySelector(selector);
 const app = $('#app');
@@ -45,6 +46,9 @@ const ICONS = {
 function icon(name, size = 19) { return `<span class="icon" aria-hidden="true"><svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ICONS.book}</svg></span>`; }
 function esc(value='') { return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function bookNow() { return state.books.find(book => book.id === state.currentId); }
+function isEpub(book=bookNow()) { return book?.type==='epub' || (book?.file?.name||'').toLowerCase().endsWith('.epub'); }
+function pageWord(book=bookNow()) {return isEpub(book)?'Kapitel':'Seite';}
+function countLabel(book) {return isEpub(book)?`${book.pageCount} Kapitel`:pluralPages(book.pageCount);}
 function pluralPages(n) { return `${n} ${n === 1 ? 'Seite' : 'Seiten'}`; }
 function toast(message, error=false) {
   $('#toast-region').innerHTML = `<div class="toast ${error?'error':''}">${icon(error?'info':'check',17)}<span>${esc(message)}</span></div>`;
@@ -69,10 +73,10 @@ function renderLibrary() {
   const cards = filtered.map(book => `
     <article class="book-card">
       <button class="book-card-open" data-action="open-book" data-id="${esc(book.id)}" aria-label="${esc(book.title)} öffnen">
-        <div class="cover-box">${book.cover ? `<img class="cover-pdf" alt="" src="${book.cover}">` : `<div class="cover-fallback">${icon('file',35)}<span>PDF</span></div>`}
+        <div class="cover-box">${book.cover ? `<img class="cover-pdf" alt="" src="${book.cover}">` : `<div class="cover-fallback">${icon('file',35)}<span>${isEpub(book)?'EPUB':'PDF'}</span></div>`}
         <span class="cover-open">${icon('right',19)}</span></div>
         <div class="book-card-title" title="${esc(book.title)}">${esc(book.title)}</div>
-        <div class="book-card-sub"><span>${pluralPages(book.pageCount)}</span><span>${progress(book)}%</span></div>
+        <div class="book-card-sub"><span>${countLabel(book)}</span><span>${progress(book)}%</span></div>
         <div class="card-progress"><span style="width:${progress(book)}%"></span></div>
       </button>
       <button class="card-delete icon-btn" data-action="confirm-delete" data-id="${esc(book.id)}" aria-label="${esc(book.title)} löschen" title="Entfernen">${icon('trash',16)}</button>
@@ -80,21 +84,22 @@ function renderLibrary() {
   return `<div class="library-page">
     <header class="library-header"><div class="shell header-row">
       <div class="brand"><span class="brand-symbol">B</span><span>BLATTWERK<span class="brand-period">.</span></span></div>
-      <button class="btn btn-primary" data-action="import">${icon('plus',18)} <span>PDF hinzufügen</span></button>
+      <button class="btn btn-primary" data-action="import">${icon('plus',18)} <span>Buch hinzufügen</span></button>
     </div></header>
     <main class="shell library-main">
       <div class="library-heading"><div class="library-title-wrap"><div class="section-kicker">SAMMLUNG <span class="kicker-line"></span> ${String(state.books.length).padStart(2, '0')} DATEIEN</div><h1>Bibliothek<span class="title-period">.</span></h1></div>
         ${state.books.length ? `<label class="search-field">${icon('search',18)}<input type="search" id="library-search" placeholder="Suchen" value="${esc(state.search)}" aria-label="Bücher suchen"></label>` : ''}
       </div>
       ${state.books.length && filtered.length ? `<section class="shelf-grid" aria-label="Bücher">${cards}</section>` : state.books.length ? `<div class="empty-shelf"><div class="empty-icon">${icon('search',25)}</div><h2>Keine Treffer</h2><button class="btn btn-secondary" data-action="clear-search">Suche löschen</button></div>` : `
-      <div class="empty-shelf"><div class="empty-icon">${icon('file',32)}</div><h2>Keine PDFs</h2><button class="btn btn-secondary" data-action="import">${icon('plus',18)} PDF hinzufügen</button></div>`}
+      <div class="empty-shelf"><div class="empty-icon">${icon('file',32)}</div><h2>Keine Bücher</h2><button class="btn btn-secondary" data-action="import">${icon('plus',18)} PDF / EPUB hinzufügen</button></div>`}
     </main>
     <div class="library-end">${icon('lock',13)} Lokal gespeichert</div>
-    ${state.importing ? `<div class="modal-backdrop"><div class="modal progress-modal" role="status"><span class="loading-wheel"></span><h2>PDF wird importiert</h2></div></div>` : ''}
+    ${state.importing ? `<div class="modal-backdrop"><div class="modal progress-modal" role="status"><span class="loading-wheel"></span><h2>Buch wird importiert</h2></div></div>` : ''}
   </div>`;
 }
 
 function renderHighlightedBlock(block, highlights) {
+  if (block.type==='image') return `<figure class="epub-figure"><img src="${esc(block.src)}" alt="${esc(block.alt||'Illustration')}"></figure>`;
   const points = new Set([block.start,block.end]);
   for (const mark of highlights) {
     if (mark.start < block.end && mark.end > block.start) {
@@ -116,7 +121,7 @@ function renderPaper() {
   const book = bookNow();
   if (state.loadingPage || state.opening) return `<div class="book-paper ${state.paper==='white'?'white':'night'}"><div class="paper-empty"><span class="loading-wheel"></span><span>Seite wird geladen</span></div></div>`;
   const marks = (book.highlights||[]).filter(h => h.page===state.page);
-  const body = state.blocks.length ? state.blocks.map(block => renderHighlightedBlock(block,marks)).join('') : `<div class="paper-empty">${icon('file',30)}<strong>Kein Text erkannt</strong><span>Diese Seite könnte ein Scan sein.</span><button data-action="mode-pdf" class="btn btn-secondary">PDF anzeigen</button></div>`;
+  const body = state.blocks.length ? state.blocks.map(block => renderHighlightedBlock(block,marks)).join('') : `<div class="paper-empty">${icon('file',30)}<strong>Kein Text erkannt</strong><span>${isEpub(book)?'Dieses Kapitel ist leer.':'Diese Seite könnte ein Scan sein.'}</span>${isEpub(book)?'':'<button data-action="mode-pdf" class="btn btn-secondary">PDF anzeigen</button>'}</div>`;
   return `<div class="book-paper ${state.paper==='white'?'white':'night'}" id="paper-scroll" data-page="${state.page}"><div class="paper-content"><article class="book-text" id="book-text" style="--reader-font-size:${state.fontSize}px">${body}</article></div></div>`;
 }
 
@@ -139,7 +144,7 @@ function displayedNotes() {
 function renderNoteEditor() {
   const n=state.editingNote;
   if(!n)return '';
-  return `<div class="note-editor"><div class="editor-title">${n.id==='new'?'Neue Notiz':'Notiz bearbeiten'} <span>· Seite ${n.page+1}</span></div>
+  return `<div class="note-editor"><div class="editor-title">${n.id==='new'?'Neue Notiz':'Notiz bearbeiten'} <span>· ${pageWord()} ${n.page+1}</span></div>
     ${n.quote?`<div class="note-editor-quote">${esc(n.quote.slice(0,220))}${n.quote.length>220?'…':''}</div>`:''}
     <textarea id="note-draft" placeholder="Notiz schreiben …" aria-label="Notiztext">${esc(n.body||'')}</textarea>
     <div class="note-editor-actions"><button class="btn btn-quiet" data-action="cancel-note">Abbrechen</button><button class="btn btn-primary" data-action="save-note">Speichern</button></div>
@@ -151,9 +156,9 @@ function renderNotesPanel() {
   const notes=displayedNotes();
   const book=bookNow();
   return `<aside class="note-panel" aria-label="Notizen"><div class="note-top"><div class="note-topline"><h2>Notizen <span class="notes-count">${(book.notes||[]).length}</span></h2><button class="icon-btn" data-action="toggle-notes" aria-label="Notizen schließen">${icon('close',19)}</button></div>
-    <div class="note-tabs"><button data-action="notes-filter" data-value="page" class="${state.noteFilter==='page'?'selected':''}">Diese Seite</button><button data-action="notes-filter" data-value="all" class="${state.noteFilter==='all'?'selected':''}">Alle</button></div></div>
+    <div class="note-tabs"><button data-action="notes-filter" data-value="page" class="${state.noteFilter==='page'?'selected':''}">${isEpub(book)?'Dieses Kapitel':'Diese Seite'}</button><button data-action="notes-filter" data-value="all" class="${state.noteFilter==='all'?'selected':''}">Alle</button></div></div>
     <div class="note-body"><button class="note-new" data-action="new-note">${icon('plus',17)} Neue Notiz</button>${renderNoteEditor()}
-      ${notes.length?notes.map(note=>`<button class="note-card" data-action="${note.isMark?'note-for-highlight':'edit-note'}" data-id="${esc(note.isMark?note.highlightId:note.id)}"><div class="note-card-head"><span>${note.isMark?'MARKIERUNG':'NOTIZ'}</span><span>SEITE ${note.page+1}</span></div>${note.quote?`<div class="note-quote">${esc(note.quote)}</div>`:''}${note.body?`<div class="note-preview">${esc(note.body)}</div>`:''}</button>`).join(''):`<div class="notes-empty">Keine Notizen</div>`}
+      ${notes.length?notes.map(note=>`<button class="note-card" data-action="${note.isMark?'note-for-highlight':'edit-note'}" data-id="${esc(note.isMark?note.highlightId:note.id)}"><div class="note-card-head"><span>${note.isMark?'MARKIERUNG':'NOTIZ'}</span><span>${pageWord().toUpperCase()} ${note.page+1}</span></div>${note.quote?`<div class="note-quote">${esc(note.quote)}</div>`:''}${note.body?`<div class="note-preview">${esc(note.body)}</div>`:''}</button>`).join(''):`<div class="notes-empty">Keine Notizen</div>`}
     </div><div class="note-bottom"><span>${(book.highlights||[]).length} Markierungen</span><button data-action="export-notes">${icon('download',15)} Exportieren</button></div></aside>`;
 }
 
@@ -163,12 +168,12 @@ function renderReader() {
   const percent=progress({...book,lastPage:state.page});
   return `<div class="reader-app"><header class="reader-header"><div class="reader-header-left"><button class="reader-back" data-action="back-library" aria-label="Zur Bibliothek" title="Zur Bibliothek">${icon('left',19)} <span>Bibliothek</span></button></div>
     <div class="reader-header-center"><div class="reader-name" title="${esc(book.title)}">${esc(book.title)}</div></div>
-    <div class="reader-header-right"><button class="header-pill ${state.noteOpen?'active':''}" data-action="toggle-notes" aria-pressed="${state.noteOpen}" title="Notizen öffnen">${icon('note',18)} <span>Notizen</span></button><button class="icon-btn download-btn" data-action="download-pdf" title="PDF herunterladen" aria-label="PDF herunterladen">${icon('download',19)}</button></div></header>
+    <div class="reader-header-right"><button class="header-pill ${state.noteOpen?'active':''}" data-action="toggle-notes" aria-pressed="${state.noteOpen}" title="Notizen öffnen">${icon('note',18)} <span>Notizen</span></button><button class="icon-btn download-btn" data-action="download-pdf" title="Datei herunterladen" aria-label="Datei herunterladen">${icon('download',19)}</button></div></header>
     <div class="reader-grid ${state.noteOpen?'with-notes':''}"><main class="reading-column">
-      <div class="reading-toolbar"><div class="mode-picker"><button class="${state.mode==='book'?'selected':''}" data-action="mode-book" aria-pressed="${state.mode==='book'}">Buch</button><button class="${state.mode==='pdf'?'selected':''}" data-action="mode-pdf" aria-pressed="${state.mode==='pdf'}">Original-PDF</button></div>
-      <div class="tool-group">${state.mode==='pdf'?`<button class="icon-btn" data-action="zoom-out" title="Verkleinern" aria-label="Verkleinern">${icon('minus',17)}</button><span class="zoom-label">${Math.round(state.zoom*100)}%</span><button class="icon-btn" data-action="zoom-in" title="Vergrößern" aria-label="Vergrößern">${icon('plus',17)}</button>`:''}<div class="settings-wrap"><button class="icon-btn ${state.settingsOpen?'active':''}" data-action="settings" title="Darstellung" aria-label="Darstellung">${icon('settings',19)}</button>${state.settingsOpen?renderSettings():''}</div></div></div>
-      <div class="book-stage"><button class="stage-arrow left" data-action="prev-page" aria-label="Vorherige Seite" ${state.page<=0?'disabled':''}>${icon('left',25)}</button><div class="page-wrapper">${state.mode==='book'?renderPaper():`<div class="original-wrap" id="original-wrap"><div class="original-loading"><span class="loading-wheel"></span></div><canvas id="pdf-canvas" class="hidden"></canvas></div>`}</div><button class="stage-arrow right" data-action="next-page" aria-label="Nächste Seite" ${state.page>=book.pageCount-1?'disabled':''}>${icon('right',25)}</button></div>
-      <footer class="reader-footer"><div class="pager"><button data-action="prev-page" aria-label="Vorherige Seite" ${state.page<=0?'disabled':''}>${icon('left',18)}</button><span class="page-label"><input class="page-number-input" id="page-number" type="number" min="1" max="${book.pageCount}" value="${state.page+1}" aria-label="Seitenzahl"> <span class="page-of">/ ${book.pageCount}</span></span><button data-action="next-page" aria-label="Nächste Seite" ${state.page>=book.pageCount-1?'disabled':''}>${icon('right',18)}</button></div><div class="reading-progress"><div class="progress-track"><span style="width:${percent}%"></span></div><span class="progress-number">${percent}%</span></div></footer>
+      <div class="reading-toolbar">${isEpub(book)?'<div class="epub-mode">EPUB · Buchansicht</div>':`<div class="mode-picker"><button class="${state.mode==='book'?'selected':''}" data-action="mode-book" aria-pressed="${state.mode==='book'}">Buch</button><button class="${state.mode==='pdf'?'selected':''}" data-action="mode-pdf" aria-pressed="${state.mode==='pdf'}">Original-PDF</button></div>`}
+      <div class="tool-group">${!isEpub(book)&&state.mode==='pdf'?`<button class="icon-btn" data-action="zoom-out" title="Verkleinern" aria-label="Verkleinern">${icon('minus',17)}</button><span class="zoom-label">${Math.round(state.zoom*100)}%</span><button class="icon-btn" data-action="zoom-in" title="Vergrößern" aria-label="Vergrößern">${icon('plus',17)}</button>`:''}<div class="settings-wrap"><button class="icon-btn ${state.settingsOpen?'active':''}" data-action="settings" title="Darstellung" aria-label="Darstellung">${icon('settings',19)}</button>${state.settingsOpen?renderSettings():''}</div></div></div>
+      <div class="book-stage"><button class="stage-arrow left" data-action="prev-page" aria-label="${isEpub(book)?'Vorheriges Kapitel':'Vorherige Seite'}" ${state.page<=0?'disabled':''}>${icon('left',25)}</button><div class="page-wrapper">${(isEpub(book)||state.mode==='book')?renderPaper():`<div class="original-wrap" id="original-wrap"><div class="original-loading"><span class="loading-wheel"></span></div><canvas id="pdf-canvas" class="hidden"></canvas></div>`}</div><button class="stage-arrow right" data-action="next-page" aria-label="${isEpub(book)?'Nächstes Kapitel':'Nächste Seite'}" ${state.page>=book.pageCount-1?'disabled':''}>${icon('right',25)}</button></div>
+      <footer class="reader-footer"><div class="pager"><button data-action="prev-page" aria-label="${isEpub(book)?'Vorheriges Kapitel':'Vorherige Seite'}" ${state.page<=0?'disabled':''}>${icon('left',18)}</button><span class="page-label">${isEpub(book)?'<span class="chapter-prefix">Kap.</span> ':''}<input class="page-number-input" id="page-number" type="number" min="1" max="${book.pageCount}" value="${state.page+1}" aria-label="${isEpub(book)?'Kapitelnummer':'Seitenzahl'}"> <span class="page-of">/ ${book.pageCount}</span></span><button data-action="next-page" aria-label="${isEpub(book)?'Nächstes Kapitel':'Nächste Seite'}" ${state.page>=book.pageCount-1?'disabled':''}>${icon('right',18)}</button></div><div class="reading-progress"><div class="progress-track"><span style="width:${percent}%"></span></div><span class="progress-number">${percent}%</span></div></footer>
     </main>${state.noteOpen?renderNotesPanel():''}</div></div>
     ${state.noteOpen?'<div class="mobile-note-backdrop" data-action="toggle-notes"></div>':''}`;
 }
@@ -176,7 +181,7 @@ function renderReader() {
 function renderModal() {
   if (!state.modal) return '';
   const book=state.books.find(b=>b.id===state.modal.id);
-  return `<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="PDF löschen"><button class="icon-btn close-x" data-action="close-modal" aria-label="Schließen">${icon('close',19)}</button><h2>PDF löschen?</h2><p>„${esc(book?.title||'Dieses PDF')}“ und alle Notizen werden dauerhaft gelöscht.</p><div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Abbrechen</button><button class="btn btn-primary" data-action="delete-book" data-id="${esc(book?.id||'')}">Löschen</button></div></div></div>`;
+  return `<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Buch löschen"><button class="icon-btn close-x" data-action="close-modal" aria-label="Schließen">${icon('close',19)}</button><h2>Buch löschen?</h2><p>„${esc(book?.title||'Dieses Buch')}“ und alle Notizen werden dauerhaft gelöscht.</p><div class="modal-actions"><button class="btn btn-secondary" data-action="close-modal">Abbrechen</button><button class="btn btn-primary" data-action="delete-book" data-id="${esc(book?.id||'')}">Löschen</button></div></div></div>`;
 }
 
 function render() {
@@ -195,43 +200,50 @@ function render() {
 async function openBook(id) {
   const book=state.books.find(b=>b.id===id); if (!book) return;
   state.readerVersion++; const token=state.readerVersion;
-  const oldDoc=state.doc; state.doc=null; if(oldDoc) oldDoc.destroy().catch(()=>{});
-  state.currentId=id; state.page=Math.min(book.pageCount-1,book.lastPage||0); state.mode=book.mode||'book';
+  const oldDoc=state.doc; state.doc=null; if(oldDoc && typeof oldDoc.destroy==='function') oldDoc.destroy().catch(()=>{});
+  state.currentId=id; state.page=Math.max(0,Math.min(book.pageCount-1,book.lastPage||0)); state.mode=isEpub(book)?'book':book.mode||'book';
+  state.restoreScroll=isEpub(book)?(book.lastScroll||0):null;
   state.noteOpen=false;state.settingsOpen=false;state.editingNote=null;state.pageCache=new Map();state.blocks=[];state.opening=true; state.zoom=1;
   updateBook(id,{lastOpened:Date.now()}); render();
   try {
-    const doc=await loadDocument(book.file);
-    if (state.readerVersion!==token) { doc.destroy().catch(()=>{}); return; }
+    const doc=isEpub(book)?await loadEpub(book.file):await loadDocument(book.file);
+    if (state.readerVersion!==token) { if(typeof doc.destroy==='function')doc.destroy().catch(()=>{}); return; }
     state.doc=doc;state.opening=false; await showPage(state.page, false);
   } catch (error) {
-    console.error(error);toast('PDF konnte nicht geöffnet werden. Bitte prüfe die Datei und die Internetverbindung.',true);
+    console.error(error);toast('Datei konnte nicht geöffnet werden. Bei EPUBs ist eventuell Kopierschutz aktiv.',true);
     state.currentId=null;state.opening=false;render();
   }
 }
 function backToLibrary() {
   state.readerVersion++;state.pageVersion++;
-  const doc=state.doc;state.doc=null;if(doc)doc.destroy().catch(()=>{});
+  const doc=state.doc;state.doc=null;if(doc&&typeof doc.destroy==='function')doc.destroy().catch(()=>{});
   state.currentId=null;state.noteOpen=false;state.editingNote=null;state.settingsOpen=false;state.selectedText=null;render();
 }
 async function showPage(page, shouldSave=true) {
   const book=bookNow();if (!book) return;
   const target=Math.max(0,Math.min(book.pageCount-1,page));
+  if(isEpub(book)&&target!==state.page){state.restoreScroll=0;updateBook(book.id,{lastScroll:0});}
   state.page=target;state.settingsOpen=false;state.selectedText=null;
   if(shouldSave)updateBook(book.id,{lastPage:target});
   const token=++state.pageVersion;
   if(state.mode==='book' && state.doc) {
     const cached=state.pageCache.get(target);
-    if(cached) {state.blocks=cached;state.loadingPage=false;render();return;}
+    if(cached) {state.blocks=cached;state.loadingPage=false;render();restoreEpubScroll();return;}
     state.loadingPage=true;state.blocks=[];render();
     try {
-      const blocks=await extractPage(state.doc,target+1);
+      const blocks=isEpub(book)?await extractEpubChapter(state.doc,target):await extractPage(state.doc,target+1);
       if(token!==state.pageVersion||!state.currentId)return;
-      state.pageCache.set(target,blocks);state.blocks=blocks;state.loadingPage=false;render();
+      state.pageCache.set(target,blocks);state.blocks=blocks;state.loadingPage=false;render();restoreEpubScroll();
     } catch (error) {console.error(error);state.loadingPage=false;state.blocks=[];render();toast('Text auf dieser Seite konnte nicht geladen werden.',true);}
   } else {state.loadingPage=false;render();}
 }
+function restoreEpubScroll() {
+  if(state.restoreScroll===null || state.restoreScroll===undefined) return;
+  const offset=state.restoreScroll;state.restoreScroll=null;
+  requestAnimationFrame(()=>{const el=$('#paper-scroll');if(el)el.scrollTop=offset;});
+}
 async function setMode(mode) {
-  if(!bookNow()||state.mode===mode)return;
+  if(!bookNow()||isEpub()||state.mode===mode)return;
   state.mode=mode;state.zoom=1;state.settingsOpen=false;updateBook(state.currentId,{mode});await showPage(state.page,false);
 }
 let canvasDrawing=0;
@@ -320,31 +332,34 @@ function markSelection(color,withNote=false) {
 function exportNotes() {
   const book=bookNow();if(!book)return;
   const lines=[`# ${book.title}`, '', 'Notizen & Markierungen', ''];
+  const chapterLabel=pageWord(book);
   const entries=[...(book.notes||[])].sort((a,b)=>a.page-b.page);
-  for(const note of entries){lines.push(`## Seite ${note.page+1}`);if(note.quote)lines.push(`> ${note.quote.replace(/\n/g,' ')}`,'');lines.push(note.body,'');}
+  for(const note of entries){lines.push(`## ${chapterLabel} ${note.page+1}`);if(note.quote)lines.push(`> ${note.quote.replace(/\n/g,' ')}`,'');lines.push(note.body,'');}
   const unnoted=(book.highlights||[]).filter(h=>!entries.some(n=>n.highlightId===h.id));
-  if(unnoted.length){lines.push('## Markierungen ohne Notiz','');for(const mark of unnoted)lines.push(`- Seite ${mark.page+1}: „${mark.quote.replace(/\n/g,' ')}“`);}
+  if(unnoted.length){lines.push('## Markierungen ohne Notiz','');for(const mark of unnoted)lines.push(`- ${chapterLabel} ${mark.page+1}: „${mark.quote.replace(/\n/g,' ')}“`);}
   if(!entries.length&&!unnoted.length){toast('Noch keine Notizen oder Markierungen vorhanden.');return;}
   downloadBlob(new Blob([lines.join('\n')],{type:'text/markdown;charset=utf-8'}),`${book.title}-Notizen.md`);
   toast('Notizen wurden exportiert.');
 }
 function downloadBlob(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
 async function importFiles(files) {
-  const pdfFiles=[...files].filter(file => /\.pdf$/i.test(file.name)||file.type==='application/pdf');
-  if(!pdfFiles.length){toast('Bitte wähle eine PDF-Datei aus.',true);return;}
+  const supported=[...files].filter(file => /\.(pdf|epub)$/i.test(file.name)||['application/pdf','application/epub+zip'].includes(file.type));
+  if(!supported.length){toast('Bitte PDF oder EPUB auswählen.',true);return;}
   state.importing=true;render();let imported=0;
-  for(const file of pdfFiles){
+  for(const file of supported){
     let doc;
     try{
-      doc=await loadDocument(file);
-      const cover=await makeCover(doc);
-      const book={id:crypto.randomUUID(),title:file.name.replace(/\.pdf$/i,'').replace(/[_-]/g,' ').trim()||'Unbenanntes Buch',file,pageCount:doc.numPages,cover,
-        addedAt:Date.now(),lastOpened:null,lastPage:0,mode:'book',notes:[],highlights:[]};
+      const epub=/\.epub$/i.test(file.name)||file.type==='application/epub+zip';
+      doc=epub?await loadEpub(file):await loadDocument(file);
+      const cover=epub?doc.cover:await makeCover(doc);
+      const book={id:crypto.randomUUID(),type:epub?'epub':'pdf',title:epub?doc.title:(file.name.replace(/\.pdf$/i,'').replace(/[_-]/g,' ').trim()||'Unbenanntes Buch'),
+        author:epub?doc.author:'',file,pageCount:epub?doc.chapters.length:doc.numPages,cover,
+        addedAt:Date.now(),lastOpened:null,lastPage:0,lastScroll:0,mode:'book',notes:[],highlights:[]};
       await putBook(book);state.books.push(book);imported++;
     }catch(error){console.error(error);toast(`„${file.name}“ konnte nicht importiert werden.`,true);}
-    finally{try{await doc?.destroy();}catch{}}
+    finally{try{if(doc&&typeof doc.destroy==='function')await doc.destroy();}catch{}}
   }
-  state.importing=false;render();if(imported)toast(imported===1?'PDF ist in deiner Bibliothek.':`${imported} PDFs wurden importiert.`);
+  state.importing=false;render();if(imported)toast(imported===1?'Buch importiert.':`${imported} Bücher importiert.`);
 }
 async function importSample() {
   try {const response=await fetch('./beispiel.pdf');if(!response.ok)throw new Error('Leseprobe fehlt');
@@ -393,7 +408,7 @@ document.addEventListener('click',async (event)=>{
     case 'remove-note':removeNote(id);break;
     case 'remove-highlight':removeHighlight(id);break;
     case 'export-notes':exportNotes();break;
-    case 'download-pdf':{const book=bookNow();if(book)downloadBlob(book.file,`${book.title}.pdf`);break;}
+    case 'download-pdf':{const book=bookNow();if(book)downloadBlob(book.file,`${book.title}.${isEpub(book)?'epub':'pdf'}`);break;}
     case 'mark-text':markSelection(target.dataset.color||'green');break;
     case 'mark-note':markSelection('gray',true);break;
   }
@@ -402,6 +417,14 @@ document.addEventListener('click',(event)=>{
   const target=event.target.closest('mark[data-hid]');
   if(target&&bookNow()){event.preventDefault();noteForHighlight(target.dataset.hid);}
 });
+let epubScrollTimer;
+document.addEventListener('scroll',event=>{
+  const el=event.target;
+  if(el?.id!=='paper-scroll'||!isEpub()||state.restoreScroll!==null)return;
+  clearTimeout(epubScrollTimer);
+  const id=state.currentId,page=state.page,scroll=el.scrollTop;
+  epubScrollTimer=setTimeout(()=>{if(state.currentId===id&&state.page===page)updateBook(id,{lastScroll:scroll});},500);
+},true);
 document.addEventListener('change',(event)=>{
   if(event.target.id==='page-number'){const page=Number(event.target.value);if(Number.isInteger(page)&&page>=1&&page<=(bookNow()?.pageCount||0))showPage(page-1);else render();}
 });
@@ -433,13 +456,13 @@ document.addEventListener('keydown',(event)=>{
   if(event.key==='ArrowLeft'){event.preventDefault();showPage(state.page-1);}
 });
 let dragDepth=0;
-window.addEventListener('dragenter',event=>{if(![...event.dataTransfer?.types||[]].includes('Files'))return;event.preventDefault();dragDepth++;if(!$('#drop-overlay'))document.body.insertAdjacentHTML('beforeend',`<div class="drop-screen" id="drop-overlay"><div class="drop-card">${icon('upload',44)}<h3>PDF hinzufügen</h3></div></div>`);});
+window.addEventListener('dragenter',event=>{if(![...event.dataTransfer?.types||[]].includes('Files'))return;event.preventDefault();dragDepth++;if(!$('#drop-overlay'))document.body.insertAdjacentHTML('beforeend',`<div class="drop-screen" id="drop-overlay"><div class="drop-card">${icon('upload',44)}<h3>PDF / EPUB hinzufügen</h3></div></div>`);});
 window.addEventListener('dragover',event=>{if([...event.dataTransfer?.types||[]].includes('Files'))event.preventDefault();});
 window.addEventListener('dragleave',event=>{event.preventDefault();dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)$('#drop-overlay')?.remove();});
 window.addEventListener('drop',async event=>{event.preventDefault();dragDepth=0;$('#drop-overlay')?.remove();if(event.dataTransfer?.files?.length)await importFiles(event.dataTransfer.files);});
 window.addEventListener('blur',()=>{dragDepth=0;$('#drop-overlay')?.remove();});
 let resizeTimer;
-window.addEventListener('resize',()=>{if(state.mode==='pdf'&&bookNow()){clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>render(),180);}});
+window.addEventListener('resize',()=>{if(state.mode==='pdf'&&!isEpub()&&bookNow()){clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>render(),180);}});
 
 async function initialize(){
   try{state.books=await getBooks();}
